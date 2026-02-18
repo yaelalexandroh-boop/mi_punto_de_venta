@@ -10,7 +10,6 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/html5-qrcode"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.15.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.15.0/firebase-database-compat.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -29,9 +28,8 @@
 </head>
 <body>
     <div id="root"></div>
-
     <script type="text/babel">
-        const { useState, useEffect, useMemo, useRef } = React;
+        const { useState, useEffect, useMemo } = React;
 
         const firebaseConfig = {
             apiKey: "AIzaSyB_y5tjnNrdMli8_5bd1tKZSSoaCwPRgIA",
@@ -50,7 +48,6 @@
             const [mode, setMode] = useState('login');
             const [scanning, setScanning] = useState(false);
             const [search, setSearch] = useState("");
-            const chartRef = useRef(null);
 
             useEffect(() => {
                 const dbRef = database.ref('elite_pos_v2');
@@ -70,7 +67,7 @@
             const misVentas = useMemo(() => (db.ventas || []).filter(v => v.storeID === storeID).reverse(), [db.ventas, storeID]);
             const misGastos = useMemo(() => (db.gastos || []).filter(g => g.storeID === storeID).reverse(), [db.gastos, storeID]);
 
-            // --- ESCÁNER ---
+            // ESCÁNER
             useEffect(() => {
                 let html5QrCode;
                 if (scanning) {
@@ -78,71 +75,55 @@
                     html5QrCode.start({ facingMode: "environment" }, { fps: 15, qrbox: 250 }, (txt) => {
                         const p = (db.productos || []).find(prod => prod.barcode === txt && prod.storeID === storeID);
                         if (p && p.stock > 0) { addItem(p); setScanning(false); html5QrCode.stop(); }
-                        else alert("No encontrado");
+                        else alert("No encontrado o sin stock");
                     }).catch(e => console.log(e));
                 }
                 return () => { if (html5QrCode?.isScanning) html5QrCode.stop(); };
             }, [scanning]);
 
-            // --- REPORTES ---
-            const exportarVentas = () => {
+            const addItem = (p) => {
+                const ex = carrito.find(i => i.id === p.id);
+                if (ex && ex.cant >= p.stock) return alert("Sin stock suficiente");
+                setCarrito(ex ? carrito.map(i => i.id === p.id ? {...i, cant: i.cant+1} : i) : [...carrito, {...p, cant: 1}]);
+            };
+
+            const exportarExcel = () => {
                 let csv = "ID,Fecha,Total,Ganancia\n";
                 misVentas.forEach(v => { csv += `${v.id},${v.fecha.replace(/,/g, "")},${v.total},${v.ganancia || 0}\n`; });
                 const blob = new Blob([csv], { type: 'text/csv' });
                 const a = document.createElement('a');
                 a.href = window.URL.createObjectURL(blob);
-                a.download = `Reporte_${user.name}.csv`;
+                a.download = `Ventas_${user.name}.csv`;
                 a.click();
             };
 
-            const generarTicket = (venta, items) => {
-                const { jsPDF } = window.jspdf;
-                const doc = new jsPDF({ unit: 'mm', format: [80, 150] });
-                doc.setFontSize(14).text(user.name, 40, 10, { align: "center" });
-                doc.setFontSize(8).text(`Fecha: ${venta.fecha}`, 10, 20);
-                let y = 30;
-                items.forEach(i => {
-                    doc.text(`${i.cant}x ${i.nombre.substring(0,15)}`, 10, y);
-                    doc.text(`$${(i.precio * i.cant).toFixed(2)}`, 70, y, { align: "right" });
-                    y += 5;
-                });
-                doc.setFontSize(12).text(`TOTAL: $${venta.total.toFixed(2)}`, 70, y + 10, { align: "right" });
-                doc.save(`Ticket_${venta.id}.pdf`);
-            };
-
-            const addItem = (p) => {
-                const ex = carrito.find(i => i.id === p.id);
-                if (ex && ex.cant >= p.stock) return alert("Sin stock");
-                setCarrito(ex ? carrito.map(i => i.id === p.id ? {...i, cant: i.cant+1} : i) : [...carrito, {...p, cant: 1}]);
-            };
-
-            const finalizarVenta = () => {
+            const finalizarCobro = () => {
                 const total = carrito.reduce((a, b) => a + (b.precio * b.cant), 0);
                 const costoTotal = carrito.reduce((a, b) => a + ((b.costo || 0) * b.cant), 0);
                 const ganancia = total - costoTotal;
                 
-                const nVenta = { id: Date.now(), total, ganancia, storeID, fecha: new Date().toLocaleString(), items: carrito };
+                const nVenta = { id: Date.now(), total, ganancia, storeID, fecha: new Date().toLocaleString() };
                 const nProds = db.productos.map(p => {
                     const v = carrito.find(i => i.id === p.id);
                     return v ? {...p, stock: p.stock - v.cant} : p;
                 });
                 
                 sync({ ...db, ventas: [...(db.ventas || []), nVenta], productos: nProds });
-                if(confirm("¿Imprimir ticket?")) generarTicket(nVenta, carrito);
                 setCarrito([]);
+                alert("¡Venta Exitosa!");
             };
 
             if (!user) return (
                 <div className="h-screen flex items-center justify-center p-6 bg-[#020617]">
-                    <div className="w-full max-sm glass p-10 rounded-[3rem] text-center">
-                        <h1 className="text-4xl font-black italic mb-8 uppercase tracking-tighter">ELITE<span className="text-indigo-500">POS</span></h1>
+                    <div className="w-full max-w-sm glass p-10 rounded-[3rem] text-center shadow-2xl">
+                        <h1 className="text-4xl font-black italic mb-10 tracking-tighter">ELITE<span className="text-indigo-500">POS</span></h1>
                         {mode === 'login' ? (
                             <form onSubmit={(e) => {
                                 e.preventDefault();
                                 const u = e.target.u.value.trim().toLowerCase();
                                 const p = e.target.p.value.trim();
-                                const f = (db.usuarios || []).find(x => x.user.toLowerCase() === u && x.pin === p);
-                                if(f) setUser(f); else alert("Acceso denegado");
+                                const found = (db.usuarios || []).find(x => x.user.toLowerCase() === u && x.pin === p);
+                                if(found) setUser(found); else alert("Datos incorrectos");
                             }} className="space-y-4">
                                 <input name="u" className="w-full bg-white/5 border border-white/10 p-5 rounded-2xl text-white outline-none" placeholder="Usuario" required />
                                 <input name="p" type="password" className="w-full bg-white/5 border border-white/10 p-5 rounded-2xl text-center text-white outline-none" placeholder="PIN" required />
@@ -156,11 +137,11 @@
                                 sync({...db, usuarios: [...(db.usuarios || []), nu]});
                                 setMode('login');
                             }} className="space-y-4">
-                                <input name="n" className="w-full bg-white/5 border border-white/10 p-4 rounded-xl text-white" placeholder="Negocio" required />
+                                <input name="n" className="w-full bg-white/5 border border-white/10 p-4 rounded-xl text-white" placeholder="Nombre Negocio" required />
                                 <input name="u" className="w-full bg-white/5 border border-white/10 p-4 rounded-xl text-white" placeholder="Usuario" required />
                                 <input name="p" className="w-full bg-white/5 border border-white/10 p-4 rounded-xl text-white" placeholder="PIN" required />
                                 <button className="w-full btn-premium py-5 rounded-2xl font-black uppercase text-xs">Crear Cuenta</button>
-                                <button type="button" onClick={() => setMode('login')} className="text-slate-500 text-[10px] block w-full mt-4 uppercase font-bold">Volver</button>
+                                <button type="button" onClick={() => setMode('login')} className="text-slate-500 text-[10px] block w-full mt-4 font-bold uppercase">Volver</button>
                             </form>
                         )}
                     </div>
@@ -171,14 +152,14 @@
                 <div className="flex flex-col h-screen">
                     <header className="h-20 glass border-b border-white/5 px-8 flex justify-between items-center shrink-0">
                         <div className="flex flex-col">
-                            <span className="text-2xl font-black italic uppercase">Elite<span className="text-indigo-500">POS</span></span>
-                            <span className="text-[10px] text-indigo-400 font-bold uppercase">{user.name} ({user.role})</span>
+                            <span className="text-2xl font-black italic tracking-tighter uppercase">Elite<span className="text-indigo-500">POS</span></span>
+                            <span className="text-[10px] text-indigo-400 font-bold uppercase tracking-widest">{user.name}</span>
                         </div>
                         <div className="flex items-center gap-6">
-                            <button onClick={() => setView('pos')} className={`text-[11px] font-black ${view==='pos'?'text-white':'text-slate-500'}`}>CAJA</button>
-                            {user.role === 'owner' && <button onClick={() => setView('admin')} className={`text-[11px] font-black ${view==='admin'?'text-white':'text-slate-500'}`}>ADMIN</button>}
-                            {user.role === 'owner' && <button onClick={() => setView('stats')} className={`text-[11px] font-black ${view==='stats'?'text-white':'text-slate-500'}`}>ESTADISTICAS</button>}
-                            <button onClick={() => setUser(null)} className="text-red-500"><i className="fas fa-power-off"></i></button>
+                            <button onClick={() => setView('pos')} className={`text-[11px] font-black tracking-widest ${view==='pos'?'text-white':'text-slate-500'}`}>CAJA</button>
+                            {user.role === 'owner' && <button onClick={() => setView('admin')} className={`text-[11px] font-black tracking-widest ${view==='admin'?'text-white':'text-slate-500'}`}>ADMIN</button>}
+                            {user.role === 'owner' && <button onClick={() => setView('stats')} className={`text-[11px] font-black tracking-widest ${view==='stats'?'text-white':'text-slate-500'}`}>ESTADISTICAS</button>}
+                            <button onClick={() => setUser(null)} className="text-red-500"><i className="fas fa-power-off text-lg"></i></button>
                         </div>
                     </header>
 
@@ -187,17 +168,19 @@
                             {view === 'pos' ? (
                                 <>
                                     <div className="flex gap-4 mb-8">
-                                        <input type="text" placeholder="Buscar producto..." className="flex-1 bg-white/5 border border-white/10 p-5 rounded-2xl text-xs outline-none" onChange={e => setSearch(e.target.value)} />
-                                        <button onClick={() => setScanning(!scanning)} className={`w-16 rounded-2xl ${scanning ? 'bg-red-500' : 'bg-indigo-600'}`}><i className="fas fa-barcode"></i></button>
+                                        <input type="text" placeholder="Buscar producto..." className="flex-1 bg-white/5 border border-white/10 p-5 rounded-2xl text-xs outline-none focus:border-indigo-500" onChange={e => setSearch(e.target.value)} />
+                                        <button onClick={() => setScanning(!scanning)} className={`w-16 rounded-2xl flex items-center justify-center ${scanning ? 'bg-red-500' : 'bg-indigo-600'}`}>
+                                            <i className={`fas ${scanning ? 'fa-times' : 'fa-barcode'} text-lg`}></i>
+                                        </button>
                                     </div>
                                     {scanning && <div id="reader"></div>}
                                     <div className="grid grid-cols-2 lg:grid-cols-4 gap-6">
                                         {misProds.map(p => (
                                             <div key={p.id} onClick={() => p.stock > 0 && addItem(p)} className={`glass p-6 rounded-[2rem] cursor-pointer transition-all active:scale-95 ${p.stock <= 5 ? 'low-stock' : 'hover:border-indigo-500'}`}>
-                                                <h3 className="text-[10px] font-black text-slate-500 uppercase mb-2">{p.nombre}</h3>
+                                                <h3 className="text-[10px] font-black text-slate-500 uppercase mb-2 truncate">{p.nombre}</h3>
                                                 <p className="text-3xl font-black italic">$ {p.precio}</p>
-                                                <div className="mt-4 pt-4 border-t border-white/5 flex justify-between text-[10px]">
-                                                    <span className="text-slate-500 uppercase">Stock</span>
+                                                <div className="mt-4 pt-4 border-t border-white/5 flex justify-between text-[10px] font-bold">
+                                                    <span className="text-slate-500 uppercase tracking-widest">Stock</span>
                                                     <span className={p.stock <= 5 ? 'text-red-500' : 'text-indigo-400 font-black'}>{p.stock} pz</span>
                                                 </div>
                                             </div>
@@ -207,7 +190,7 @@
                             ) : view === 'admin' ? (
                                 <div className="grid md:grid-cols-2 gap-8 max-w-6xl mx-auto">
                                     <div className="glass p-10 rounded-[2.5rem]">
-                                        <h2 className="text-xs font-black mb-8 text-indigo-400 uppercase tracking-widest">Inventario Cloud</h2>
+                                        <h2 className="text-xs font-black mb-8 text-indigo-400 uppercase tracking-widest">Gestión de Inventario</h2>
                                         <form onSubmit={(e) => {
                                             e.preventDefault();
                                             const nombre = e.target.n.value.toUpperCase().trim();
@@ -215,11 +198,12 @@
                                             const idx = nProds.findIndex(p => p.nombre === nombre && p.storeID === storeID);
                                             const np = { id: Date.now(), barcode: e.target.b.value, nombre, precio: parseFloat(e.target.pr.value), costo: parseFloat(e.target.c.value), stock: parseInt(e.target.s.value), storeID };
                                             
-                                            if(idx !== -1) nProds[idx] = { ...nProds[idx], precio: np.precio, costo: np.costo, stock: nProds[idx].stock + np.stock };
+                                            if(idx !== -1) nProds[idx] = { ...nProds[idx], precio: np.precio, costo: np.costo, stock: nProds[idx].stock + np.stock, barcode: np.barcode };
                                             else nProds.push(np);
                                             
                                             sync({...db, productos: nProds});
                                             e.target.reset();
+                                            alert("Producto actualizado en la nube");
                                         }} className="space-y-4">
                                             <input name="n" className="w-full bg-black/40 border border-white/10 p-4 rounded-xl text-xs uppercase" placeholder="Nombre Producto" required />
                                             <div className="grid grid-cols-2 gap-4">
@@ -228,22 +212,23 @@
                                             </div>
                                             <div className="grid grid-cols-2 gap-4">
                                                 <input name="b" className="w-full bg-black/40 border border-white/10 p-4 rounded-xl text-xs" placeholder="Código Barras" />
-                                                <input name="s" type="number" className="w-full bg-black/40 border border-white/10 p-4 rounded-xl text-xs" placeholder="Stock Inicial" required />
+                                                <input name="s" type="number" className="w-full bg-black/40 border border-white/10 p-4 rounded-xl text-xs" placeholder="Sumar Stock" required />
                                             </div>
-                                            <button className="w-full btn-premium py-5 rounded-xl font-black text-[11px] uppercase">Sincronizar</button>
+                                            <button className="w-full btn-premium py-5 rounded-xl font-black text-[11px] uppercase tracking-widest">Sincronizar Producto</button>
                                         </form>
                                     </div>
                                     <div className="glass p-10 rounded-[2.5rem]">
-                                        <h2 className="text-xs font-black mb-8 text-red-400 uppercase tracking-widest">Gastos Operativos</h2>
+                                        <h2 className="text-xs font-black mb-8 text-red-400 uppercase tracking-widest">Gastos del Negocio</h2>
                                         <form onSubmit={(e) => {
                                             e.preventDefault();
                                             const ng = { id: Date.now(), desc: e.target.d.value, monto: parseFloat(e.target.m.value), fecha: new Date().toLocaleDateString(), storeID };
                                             sync({...db, gastos: [...(db.gastos || []), ng]});
                                             e.target.reset();
+                                            alert("Gasto registrado");
                                         }} className="space-y-4">
-                                            <input name="d" className="w-full bg-black/40 border border-white/10 p-4 rounded-xl text-xs" placeholder="Descripción (Renta, Luz, etc)" required />
+                                            <input name="d" className="w-full bg-black/40 border border-white/10 p-4 rounded-xl text-xs" placeholder="Descripción del Gasto" required />
                                             <input name="m" type="number" className="w-full bg-black/40 border border-white/10 p-4 rounded-xl text-xs" placeholder="Monto $" required />
-                                            <button className="w-full bg-red-600 py-5 rounded-xl font-black text-[11px] uppercase">Registrar Gasto</button>
+                                            <button className="w-full bg-red-600 py-5 rounded-xl font-black text-[11px] uppercase tracking-widest">Guardar Gasto</button>
                                         </form>
                                     </div>
                                 </div>
@@ -251,20 +236,20 @@
                                 <div className="space-y-8 max-w-6xl mx-auto">
                                     <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                                         <div className="glass p-8 rounded-[2rem]">
-                                            <p className="text-[10px] font-black text-slate-500 uppercase">Ventas Brutas</p>
+                                            <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Ventas Brutas</p>
                                             <p className="text-4xl font-black italic text-emerald-400">$ {misVentas.reduce((a,b)=>a+b.total, 0).toFixed(2)}</p>
                                         </div>
                                         <div className="glass p-8 rounded-[2rem]">
-                                            <p className="text-[10px] font-black text-slate-500 uppercase">Gastos Totales</p>
+                                            <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Gastos Registrados</p>
                                             <p className="text-4xl font-black italic text-red-500">$ {misGastos.reduce((a,b)=>a+b.monto, 0).toFixed(2)}</p>
                                         </div>
                                         <div className="glass p-8 rounded-[2rem]">
-                                            <p className="text-[10px] font-black text-slate-500 uppercase">Utilidad Neta</p>
+                                            <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Utilidad Neta</p>
                                             <p className="text-4xl font-black italic text-indigo-400">$ {(misVentas.reduce((a,b)=>a+(b.ganancia || 0), 0) - misGastos.reduce((a,b)=>a+b.monto, 0)).toFixed(2)}</p>
                                         </div>
                                     </div>
                                     <div className="flex justify-end">
-                                        <button onClick={exportarVentas} className="bg-emerald-600 p-4 rounded-2xl text-[10px] font-black uppercase"><i className="fas fa-file-excel mr-2"></i> Reporte Excel</button>
+                                        <button onClick={exportarExcel} className="bg-emerald-600 hover:bg-emerald-500 px-6 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all"><i className="fas fa-file-excel mr-2"></i> Descargar Reporte Excel</button>
                                     </div>
                                 </div>
                             )}
@@ -272,8 +257,8 @@
 
                         <aside className="w-full md:w-[380px] glass border-l border-white/10 flex flex-col shrink-0">
                             <div className="p-8 border-b border-white/5 flex justify-between items-center">
-                                <h2 className="font-black text-[11px] text-slate-500 uppercase">Caja</h2>
-                                <button onClick={() => setCarrito([])} className="text-red-500 text-[10px] font-black uppercase underline">Vaciar</button>
+                                <h2 className="font-black text-[11px] text-slate-500 uppercase tracking-[0.2em]">Caja Registradora</h2>
+                                <button onClick={() => setCarrito([])} className="text-red-500 text-[10px] font-black uppercase hover:underline">Vaciar</button>
                             </div>
                             <div className="flex-1 overflow-y-auto p-6 space-y-4 custom-scroll">
                                 {carrito.map((i, idx) => (
@@ -288,10 +273,10 @@
                             </div>
                             <div className="p-10 bg-slate-900/50 border-t border-white/10">
                                 <div className="flex justify-between items-end mb-8">
-                                    <span className="text-slate-500 font-black text-[11px] uppercase">Total</span>
-                                    <span className="text-5xl font-black italic leading-none">$ {carrito.reduce((a, b) => a + (b.precio * b.cant), 0).toFixed(2)}</span>
+                                    <span className="text-slate-500 font-black text-[11px] uppercase tracking-widest leading-none">Total</span>
+                                    <span className="text-5xl font-black italic tracking-tighter leading-none">$ {carrito.reduce((a, b) => a + (b.precio * b.cant), 0).toFixed(2)}</span>
                                 </div>
-                                <button onClick={finalizarVenta} disabled={carrito.length === 0} className="w-full btn-premium py-6 rounded-[1.5rem] font-black uppercase text-xs tracking-widest disabled:opacity-20 transition-all">Pagar y Ticket</button>
+                                <button onClick={finalizarCobro} disabled={carrito.length === 0} className="w-full btn-premium py-6 rounded-[1.5rem] font-black uppercase text-xs tracking-widest disabled:opacity-20 transition-all active:scale-95">Finalizar y Cobrar</button>
                             </div>
                         </aside>
                     </div>
