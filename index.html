@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>ELITE POS | Enterprise Full Suite</title>
+    <title>ELITE POS | Enterprise Suite</title>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -16,7 +16,9 @@
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;900&display=swap');
         body { background: #020617; font-family: 'Inter', sans-serif; color: white; overflow: hidden; height: 100vh; }
         .glass { background: rgba(15, 23, 42, 0.7); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.08); }
-        .btn-premium { background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%); box-shadow: 0 10px 20px -10px rgba(99, 102, 241, 0.5); }
+        .btn-premium { background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%); transition: all 0.3s ease; }
+        .btn-premium:hover { transform: translateY(-2px); box-shadow: 0 10px 20px -10px rgba(99, 102, 241, 0.7); }
+        .btn-premium:disabled { opacity: 0.3; transform: none; }
         .low-stock { border: 1px solid rgba(239, 68, 68, 0.5) !important; animation: pulse-red 2s infinite; }
         @keyframes pulse-red { 0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.3); } 70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); } 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); } }
         #reader { width: 100%; border-radius: 24px; overflow: hidden; border: 2px solid #6366f1 !important; }
@@ -26,8 +28,9 @@
 </head>
 <body>
     <div id="root"></div>
+
     <script type="text/babel">
-        const { useState, useEffect } = React;
+        const { useState, useEffect, useMemo } = React;
 
         const firebaseConfig = {
             apiKey: "AIzaSyB_y5tjnNrdMli8_5bd1tKZSSoaCwPRgIA",
@@ -40,38 +43,53 @@
 
         const App = () => {
             const [db, setDb] = useState({ usuarios: [], productos: [], ventas: [] });
-            const [user, setUser] = useState(null);
+            const [user, setUser] = useState(() => JSON.parse(localStorage.getItem('elite_user')) || null);
             const [view, setView] = useState('pos');
             const [carrito, setCarrito] = useState([]);
             const [mode, setMode] = useState('login');
             const [scanning, setScanning] = useState(false);
             const [search, setSearch] = useState("");
 
+            // Sincronización en Tiempo Real
             useEffect(() => {
                 const dbRef = database.ref('elite_pos_v2');
                 dbRef.on('value', s => { if(s.val()) setDb(s.val()); });
                 return () => dbRef.off();
             }, []);
 
-            const sync = (nd) => database.ref('elite_pos_v2').set(nd);
-            const storeID = user?.storeID;
-            const misProds = (db.productos || []).filter(p => p.storeID === storeID && p.nombre.toLowerCase().includes(search.toLowerCase()));
-            const misVentas = (db.ventas || []).filter(v => v.storeID === storeID);
+            // Guardar usuario en LocalStorage
+            useEffect(() => {
+                if (user) localStorage.setItem('elite_user', JSON.stringify(user));
+                else localStorage.removeItem('elite_user');
+            }, [user]);
 
-            // LÓGICA DE ESCÁNER RECONSTRUIDA
+            const sync = (nd) => database.ref('elite_pos_v2').set(nd);
+            
+            const storeID = user?.storeID;
+            
+            // Filtros Optimizados
+            const misProds = useMemo(() => 
+                (db.productos || []).filter(p => p.storeID === storeID && p.nombre.toLowerCase().includes(search.toLowerCase())),
+            [db.productos, storeID, search]);
+
+            const misVentas = useMemo(() => 
+                (db.ventas || []).filter(v => v.storeID === storeID).reverse(),
+            [db.ventas, storeID]);
+
+            // Lógica del Escáner
             useEffect(() => {
                 let html5QrCode;
                 if (scanning) {
                     html5QrCode = new Html5Qrcode("reader");
                     html5QrCode.start({ facingMode: "environment" }, { fps: 15, qrbox: 250 }, 
                         (decodedText) => {
-                            const p = (db.productos || []).find(prod => prod.barcode === decodedText && prod.storeID === storeID);
+                            const p = (db.productos || []).find(prod => (prod.barcode === decodedText || prod.id.toString() === decodedText) && prod.storeID === storeID);
                             if (p && p.stock > 0) {
                                 addItem(p);
                                 setScanning(false);
                                 html5QrCode.stop();
                             } else {
-                                alert("Producto no registrado o sin stock");
+                                alert("Producto no encontrado o agotado.");
                             }
                         }
                     ).catch(err => console.error("Error cámara:", err));
@@ -80,8 +98,17 @@
             }, [scanning]);
 
             const addItem = (p) => {
-                const ex = carrito.find(i => i.id === p.id);
-                setCarrito(ex ? carrito.map(i => i.id === p.id ? {...i, cant: i.cant+1} : i) : [...carrito, {...p, cant: 1}]);
+                const enCarrito = carrito.find(i => i.id === p.id);
+                if (enCarrito && enCarrito.cant >= p.stock) return alert("Sin existencias suficientes");
+                
+                setCarrito(enCarrito 
+                    ? carrito.map(i => i.id === p.id ? {...i, cant: i.cant + 1} : i) 
+                    : [...carrito, {...p, cant: 1}]
+                );
+            };
+
+            const removeItem = (id) => {
+                setCarrito(carrito.filter(i => i.id !== id));
             };
 
             const handleLogin = (e) => {
@@ -89,36 +116,41 @@
                 const u = e.target.u.value.trim().toLowerCase();
                 const p = e.target.p.value.trim();
                 const found = (db.usuarios || []).find(x => x.user.toLowerCase() === u && x.pin === p);
-                if(found) setUser(found); else alert("Datos incorrectos. Verifica tu registro.");
+                if(found) setUser(found); else alert("Acceso denegado.");
+            };
+
+            const deleteProduct = (id) => {
+                if(confirm("¿Eliminar este producto permanentemente?")) {
+                    const newProds = db.productos.filter(p => p.id !== id);
+                    sync({...db, productos: newProds});
+                }
             };
 
             if (!user) return (
-                <div className="h-screen flex items-center justify-center p-6 bg-[#020617]">
-                    <div className="w-full max-w-sm glass p-10 rounded-[3rem] text-center shadow-2xl">
+                <div className="h-screen flex items-center justify-center p-6 bg-[#020617] bg-[radial-gradient(circle_at_top_right,_#1e1b4b,_transparent)]">
+                    <div className="w-full max-w-sm glass p-10 rounded-[3rem] text-center shadow-2xl border-white/20">
                         <h1 className="text-4xl font-black italic mb-2 tracking-tighter">ELITE<span className="text-indigo-500">POS</span></h1>
-                        <p className="text-[10px] text-slate-500 mb-10 font-bold tracking-[0.4em] uppercase">Cloud Infrastructure</p>
+                        <p className="text-[10px] text-slate-500 mb-10 font-bold tracking-[0.4em] uppercase">Cloud Infrastructure v2.1</p>
                         
                         {mode === 'login' ? (
                             <form onSubmit={handleLogin} className="space-y-4">
-                                <div className="space-y-2">
-                                    <input name="u" className="w-full bg-white/5 border border-white/10 p-5 rounded-2xl text-white outline-none focus:border-indigo-500 transition-all" placeholder="Usuario" required autoCapitalize="none" />
-                                    <input name="p" type="password" className="w-full bg-white/5 border border-white/10 p-5 rounded-2xl text-center text-white outline-none focus:border-indigo-500 transition-all" placeholder="PIN de Acceso" required />
-                                </div>
-                                <button className="w-full btn-premium py-5 rounded-2xl font-black uppercase text-xs tracking-widest">Iniciar Sesión</button>
-                                <button type="button" onClick={() => setMode('reg')} className="text-indigo-400 text-[10px] block w-full mt-6 font-bold uppercase underline">Registrar Nueva Empresa</button>
+                                <input name="u" className="w-full bg-white/5 border border-white/10 p-5 rounded-2xl text-white outline-none focus:border-indigo-500 transition-all" placeholder="Usuario" required autoCapitalize="none" />
+                                <input name="p" type="password" className="w-full bg-white/5 border border-white/10 p-5 rounded-2xl text-center text-white outline-none focus:border-indigo-500 transition-all" placeholder="PIN" required />
+                                <button className="w-full btn-premium py-5 rounded-2xl font-black uppercase text-xs tracking-widest">Entrar al Sistema</button>
+                                <button type="button" onClick={() => setMode('reg')} className="text-slate-500 text-[10px] block w-full mt-6 font-bold uppercase hover:text-white">Registrar Empresa</button>
                             </form>
                         ) : (
                             <form onSubmit={(e) => {
                                 e.preventDefault();
                                 const nu = { user: e.target.u.value.trim().toLowerCase(), pin: e.target.p.value.trim(), name: e.target.n.value, storeID: 'ST-'+Date.now(), role: 'owner' };
                                 sync({...db, usuarios: [...(db.usuarios || []), nu]});
-                                alert("Empresa Registrada.");
+                                alert("Cuenta Creada.");
                                 setMode('login');
                             }} className="space-y-4">
-                                <input name="n" className="w-full bg-white/5 border border-white/10 p-4 rounded-2xl text-white outline-none" placeholder="Nombre Comercial" required />
-                                <input name="u" className="w-full bg-white/5 border border-white/10 p-4 rounded-2xl text-white outline-none" placeholder="Usuario Admin" required />
-                                <input name="p" className="w-full bg-white/5 border border-white/10 p-4 rounded-2xl text-center text-white" placeholder="PIN" required />
-                                <button className="w-full btn-premium py-5 rounded-2xl font-black uppercase text-xs">Crear Cuenta Cloud</button>
+                                <input name="n" className="w-full bg-white/5 border border-white/10 p-4 rounded-2xl text-white" placeholder="Nombre de Negocio" required />
+                                <input name="u" className="w-full bg-white/5 border border-white/10 p-4 rounded-2xl text-white" placeholder="Usuario Admin" required />
+                                <input name="p" className="w-full bg-white/5 border border-white/10 p-4 rounded-2xl text-center text-white" placeholder="PIN Numérico" required />
+                                <button className="w-full btn-premium py-5 rounded-2xl font-black uppercase text-xs">Finalizar Registro</button>
                                 <button type="button" onClick={() => setMode('login')} className="text-slate-500 text-[10px] block w-full mt-4 font-bold uppercase">Volver</button>
                             </form>
                         )}
@@ -128,96 +160,117 @@
 
             return (
                 <div className="flex flex-col h-screen">
-                    <header className="h-20 glass border-b border-white/5 px-8 flex justify-between items-center shrink-0">
+                    <header className="h-20 glass border-b border-white/10 px-8 flex justify-between items-center shrink-0 z-50">
                         <div className="flex flex-col">
                             <span className="text-2xl font-black italic tracking-tighter">ELITE<span className="text-indigo-500">POS</span></span>
-                            <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">{user.name}</span>
+                            <span className="text-[9px] font-bold text-indigo-400 uppercase tracking-widest">{user.name}</span>
                         </div>
-                        <div className="flex items-center gap-6">
-                            <button onClick={() => setView('pos')} className={`text-[11px] font-black tracking-widest ${view==='pos'?'text-indigo-400':'text-slate-500'}`}>CAJA</button>
-                            {user.role === 'owner' && <button onClick={() => setView('admin')} className={`text-[11px] font-black tracking-widest ${view==='admin'?'text-indigo-400':'text-slate-500'}`}>DASHBOARD</button>}
-                            <button onClick={() => setUser(null)} className="text-red-500 hover:scale-110 transition-transform"><i className="fas fa-power-off text-lg"></i></button>
+                        <div className="flex items-center gap-8">
+                            <nav className="flex gap-6">
+                                <button onClick={() => setView('pos')} className={`text-[11px] font-black tracking-widest transition-colors ${view==='pos'?'text-white':'text-slate-500 hover:text-slate-300'}`}>CAJA</button>
+                                {user.role === 'owner' && <button onClick={() => setView('admin')} className={`text-[11px] font-black tracking-widest transition-colors ${view==='admin'?'text-white':'text-slate-500 hover:text-slate-300'}`}>INVENTARIO</button>}
+                            </nav>
+                            <button onClick={() => setUser(null)} className="text-slate-500 hover:text-red-500 transition-colors"><i className="fas fa-power-off"></i></button>
                         </div>
                     </header>
 
                     <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
                         <main className="flex-1 overflow-y-auto p-6 custom-scroll">
                             {view === 'pos' && (
-                                <>
-                                    <div className="flex gap-3 mb-8">
+                                <div className="max-w-6xl mx-auto">
+                                    <div className="flex gap-4 mb-8">
                                         <div className="relative flex-1">
                                             <i className="fas fa-search absolute left-5 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
-                                            <input type="text" placeholder="Buscar por nombre o categoría..." className="w-full bg-white/5 border border-white/10 p-5 pl-12 rounded-[1.5rem] text-xs outline-none focus:border-indigo-500" onChange={(e) => setSearch(e.target.value)} />
+                                            <input type="text" placeholder="Buscar producto..." className="w-full bg-white/5 border border-white/10 p-5 pl-12 rounded-2xl text-sm outline-none focus:border-indigo-500" onChange={(e) => setSearch(e.target.value)} />
                                         </div>
-                                        <button onClick={() => setScanning(!scanning)} className={`w-16 rounded-[1.5rem] flex items-center justify-center text-white transition-all ${scanning ? 'bg-red-500 animate-pulse' : 'bg-indigo-600'}`}>
-                                            <i className={`fas ${scanning ? 'fa-times' : 'fa-barcode'} text-lg`}></i>
+                                        <button onClick={() => setScanning(!scanning)} className={`w-16 rounded-2xl flex items-center justify-center transition-all ${scanning ? 'bg-red-500' : 'bg-indigo-600 hover:bg-indigo-500'}`}>
+                                            <i className={`fas ${scanning ? 'fa-times' : 'fa-barcode'}`}></i>
                                         </button>
                                     </div>
                                     
-                                    {scanning && <div id="reader" className="mb-8 shadow-2xl shadow-indigo-500/20"></div>}
+                                    {scanning && <div id="reader" className="mb-8 shadow-2xl"></div>}
 
-                                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-5">
+                                    <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                                         {misProds.map(p => (
-                                            <div key={p.id} onClick={() => p.stock > 0 && addItem(p)} className={`glass p-6 rounded-[2rem] transition-all active:scale-95 ${p.stock <= 5 ? 'low-stock' : 'hover:border-indigo-500/50'}`}>
-                                                <div className="flex justify-between items-start mb-4">
-                                                    <span className="text-[10px] font-black text-slate-500 uppercase tracking-tighter truncate w-24">{p.nombre}</span>
-                                                    {p.stock <= 5 && <span className="text-[10px] text-red-500 animate-bounce">⚠️</span>}
+                                            <div key={p.id} onClick={() => p.stock > 0 && addItem(p)} className={`glass p-5 rounded-3xl transition-all cursor-pointer group active:scale-95 ${p.stock <= 0 ? 'opacity-40 grayscale' : 'hover:border-indigo-500/50'}`}>
+                                                <div className="flex justify-between items-start mb-2">
+                                                    <span className="text-[10px] font-bold text-slate-500 uppercase">{p.barcode || 'S/C'}</span>
+                                                    {p.stock <= 3 && p.stock > 0 && <span className="w-2 h-2 rounded-full bg-orange-500 animate-pulse"></span>}
                                                 </div>
-                                                <p className="text-3xl font-black text-white italic">${p.precio}</p>
-                                                <div className="mt-4 pt-4 border-t border-white/5 flex justify-between items-center">
-                                                    <span className="text-[9px] font-bold text-slate-500 uppercase">Stock</span>
-                                                    <span className={`text-[10px] font-black ${p.stock <= 5 ? 'text-red-500' : 'text-indigo-400'}`}>{p.stock} pz</span>
+                                                <h3 className="font-bold text-white text-sm mb-1 truncate uppercase">{p.nombre}</h3>
+                                                <p className="text-2xl font-black text-indigo-400">$ {p.precio.toFixed(2)}</p>
+                                                <div className="mt-4 flex justify-between items-center text-[10px] font-black uppercase">
+                                                    <span className="text-slate-500">Stock</span>
+                                                    <span className={p.stock <= 3 ? 'text-red-500' : 'text-slate-300'}>{p.stock} pz</span>
                                                 </div>
                                             </div>
                                         ))}
                                     </div>
-                                </>
+                                </div>
                             )}
 
                             {view === 'admin' && (
-                                <div className="grid md:grid-cols-2 gap-8 max-w-5xl mx-auto">
-                                    <div className="glass p-10 rounded-[2.5rem]">
-                                        <h2 className="text-[11px] font-black mb-8 text-indigo-400 uppercase tracking-[0.2em]">Registrar Mercancía</h2>
+                                <div className="grid lg:grid-cols-2 gap-8 max-w-6xl mx-auto">
+                                    <div className="glass p-8 rounded-[2.5rem] self-start">
+                                        <h2 className="text-xs font-black mb-6 text-indigo-400 uppercase tracking-widest">Gestión de Productos</h2>
                                         <form onSubmit={(e) => {
                                             e.preventDefault();
                                             const np = { id: Date.now(), barcode: e.target.b.value, nombre: e.target.n.value.toUpperCase(), precio: parseFloat(e.target.pr.value), stock: parseInt(e.target.s.value), storeID };
-                                            sync({...db, productos: [...(db.productos || []), np]});
+                                            sync({...db, productos: [np, ...(db.productos || [])]});
                                             e.target.reset();
-                                            alert("Inventario Actualizado");
                                         }} className="space-y-4">
-                                            <input name="b" className="w-full bg-black/40 border border-white/10 p-4 rounded-2xl text-xs" placeholder="Código de Barras (opcional)" />
-                                            <input name="n" className="w-full bg-black/40 border border-white/10 p-4 rounded-2xl text-xs uppercase" placeholder="Nombre del Producto" required />
+                                            <input name="b" className="w-full bg-black/20 border border-white/10 p-4 rounded-xl text-xs" placeholder="Código de Barras (Opcional)" />
+                                            <input name="n" className="w-full bg-black/20 border border-white/10 p-4 rounded-xl text-xs" placeholder="Nombre del Producto" required />
                                             <div className="grid grid-cols-2 gap-4">
-                                                <div className="space-y-2">
-                                                    <label className="text-[9px] font-black text-slate-500 uppercase ml-2">Precio</label>
-                                                    <input name="pr" type="number" step="0.01" className="w-full bg-black/40 border border-white/10 p-4 rounded-2xl font-bold" required />
-                                                </div>
-                                                <div className="space-y-2">
-                                                    <label className="text-[9px] font-black text-slate-500 uppercase ml-2">Stock Inicial</label>
-                                                    <input name="s" type="number" className="w-full bg-black/40 border border-white/10 p-4 rounded-2xl font-bold" required />
-                                                </div>
+                                                <input name="pr" type="number" step="0.01" className="w-full bg-black/20 border border-white/10 p-4 rounded-xl text-xs font-bold" placeholder="Precio $" required />
+                                                <input name="s" type="number" className="w-full bg-black/20 border border-white/10 p-4 rounded-xl text-xs font-bold" placeholder="Stock Inicial" required />
                                             </div>
-                                            <button className="w-full btn-premium py-5 rounded-2xl font-black text-[11px] uppercase tracking-widest mt-4">Guardar en Cloud</button>
+                                            <button className="w-full btn-premium py-4 rounded-xl font-black text-[10px] uppercase tracking-widest">Registrar en Nube</button>
                                         </form>
+
+                                        <div className="mt-10 overflow-hidden">
+                                            <h3 className="text-[10px] font-black text-slate-500 uppercase mb-4">Inventario Actual</h3>
+                                            <div className="space-y-2 max-h-60 overflow-y-auto custom-scroll pr-2">
+                                                {misProds.map(p => (
+                                                    <div key={p.id} className="flex justify-between items-center p-3 bg-white/5 rounded-lg border border-white/5">
+                                                        <div>
+                                                            <p className="text-[10px] font-bold uppercase">{p.nombre}</p>
+                                                            <p className="text-[9px] text-slate-500">${p.precio} | {p.stock} u.</p>
+                                                        </div>
+                                                        <button onClick={() => deleteProduct(p.id)} className="text-red-900 hover:text-red-500 transition-colors"><i className="fas fa-trash-can text-xs"></i></button>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
                                     </div>
                                     
                                     <div className="space-y-6">
-                                        <div className="glass p-8 rounded-[2.5rem] flex justify-between items-center">
+                                        <div className="glass p-8 rounded-[2.5rem] flex justify-between items-center bg-gradient-to-br from-indigo-900/20 to-transparent">
                                             <div>
-                                                <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Ventas Totales</p>
-                                                <p className="text-4xl font-black text-white italic mt-1">${misVentas.reduce((a,b)=>a+b.total, 0).toFixed(2)}</p>
+                                                <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Ventas del Periodo</p>
+                                                <p className="text-4xl font-black text-white italic mt-1">$ {misVentas.reduce((a,b)=>a+b.total, 0).toLocaleString()}</p>
                                             </div>
-                                            <i className="fas fa-chart-line text-4xl text-indigo-500/30"></i>
+                                            <div className="w-12 h-12 bg-indigo-500/20 rounded-full flex items-center justify-center">
+                                                <i className="fas fa-chart-line text-indigo-400"></i>
+                                            </div>
                                         </div>
+
                                         <div className="glass p-8 rounded-[2.5rem]">
-                                            <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-4">Actividad Reciente</h3>
-                                            <div className="space-y-3 max-h-48 overflow-y-auto custom-scroll">
-                                                {misVentas.slice(0,5).map(v => (
-                                                    <div key={v.id} className="flex justify-between text-[10px] border-b border-white/5 pb-2">
-                                                        <span className="text-slate-400">{v.fecha}</span>
-                                                        <span className="font-black text-indigo-400">+ ${v.total}</span>
-                                                    </div>
-                                                ))}
+                                            <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-6">Historial de Transacciones</h3>
+                                            <div className="space-y-4 max-h-[400px] overflow-y-auto custom-scroll pr-2">
+                                                {misVentas.length === 0 ? (
+                                                    <p className="text-[10px] text-slate-600 text-center py-10 uppercase font-bold">Sin ventas registradas</p>
+                                                ) : (
+                                                    misVentas.map(v => (
+                                                        <div key={v.id} className="flex justify-between items-center border-b border-white/5 pb-3">
+                                                            <div>
+                                                                <p className="text-[10px] font-black text-indigo-400">#TX-{v.id.toString().slice(-6)}</p>
+                                                                <p className="text-[9px] text-slate-500 font-bold uppercase">{v.fecha}</p>
+                                                            </div>
+                                                            <span className="font-black text-white text-sm">$ {v.total.toFixed(2)}</span>
+                                                        </div>
+                                                    ))
+                                                )}
                                             </div>
                                         </div>
                                     </div>
@@ -225,45 +278,59 @@
                             )}
                         </main>
 
-                        <aside className="w-full md:w-[380px] glass border-l border-white/10 flex flex-col shrink-0">
+                        <aside className="w-full md:w-[400px] glass border-l border-white/10 flex flex-col shrink-0 relative z-10">
                             <div className="p-8 border-b border-white/5 flex justify-between items-center">
-                                <h2 className="font-black text-[11px] text-slate-500 uppercase tracking-[0.2em]">Carrito de Venta</h2>
-                                <button onClick={() => setCarrito([])} className="text-red-500 text-[10px] font-black hover:underline uppercase">Vaciar</button>
+                                <h2 className="font-black text-xs text-slate-500 uppercase tracking-widest">Orden de Venta</h2>
+                                <button onClick={() => setCarrito([])} className="text-red-500 text-[10px] font-black hover:underline uppercase transition-all">Limpiar</button>
                             </div>
+                            
                             <div className="flex-1 overflow-y-auto p-6 space-y-3 custom-scroll">
                                 {carrito.length === 0 ? (
-                                    <div className="h-full flex flex-col items-center justify-center text-slate-600">
-                                        <i className="fas fa-shopping-basket text-4xl mb-4"></i>
-                                        <p className="text-[10px] font-bold uppercase tracking-widest">Esperando productos...</p>
+                                    <div className="h-full flex flex-col items-center justify-center text-slate-700 opacity-50">
+                                        <i className="fas fa-shopping-cart text-5xl mb-4"></i>
+                                        <p className="text-[10px] font-black uppercase tracking-[0.3em]">Caja vacía</p>
                                     </div>
                                 ) : (
-                                    carrito.map((item, idx) => (
-                                        <div key={idx} className="bg-white/5 p-5 rounded-[1.5rem] flex justify-between items-center group">
+                                    carrito.map((item) => (
+                                        <div key={item.id} className="bg-white/5 p-4 rounded-2xl flex justify-between items-center border border-white/5 hover:border-white/10 transition-all">
                                             <div className="flex flex-col">
-                                                <span className="font-black text-white text-[10px] uppercase">{item.nombre}</span>
-                                                <span className="text-[10px] text-slate-500">Cantidad: {item.cant}</span>
+                                                <span className="font-black text-white text-[11px] uppercase truncate w-32">{item.nombre}</span>
+                                                <div className="flex items-center gap-2 mt-1">
+                                                    <span className="text-[10px] text-indigo-400 font-bold">{item.cant}x</span>
+                                                    <span className="text-[10px] text-slate-500">${item.precio}</span>
+                                                </div>
                                             </div>
-                                            <span className="font-black text-indigo-400 text-lg">${(item.precio * item.cant).toFixed(2)}</span>
+                                            <div className="flex items-center gap-4">
+                                                <span className="font-black text-white text-md">$ {(item.precio * item.cant).toFixed(2)}</span>
+                                                <button onClick={() => removeItem(item.id)} className="text-slate-600 hover:text-red-500"><i className="fas fa-times-circle"></i></button>
+                                            </div>
                                         </div>
                                     ))
                                 )}
                             </div>
-                            <div className="p-10 bg-slate-900/80 border-t border-white/10">
-                                <div className="flex justify-between items-end mb-8">
-                                    <span className="text-slate-500 font-black text-[11px] uppercase tracking-widest">Total a Cobrar</span>
-                                    <span className="text-5xl font-black text-white italic tracking-tighter leading-none">${carrito.reduce((a, b) => a + (b.precio * b.cant), 0).toFixed(2)}</span>
+
+                            <div className="p-8 bg-slate-900/50 backdrop-blur-xl border-t border-white/10">
+                                <div className="flex justify-between items-end mb-6">
+                                    <span className="text-slate-500 font-black text-[10px] uppercase tracking-widest">Total General</span>
+                                    <span className="text-5xl font-black text-white italic tracking-tighter">$ {carrito.reduce((a, b) => a + (b.precio * b.cant), 0).toFixed(2)}</span>
                                 </div>
-                                <button onClick={() => {
-                                    const total = carrito.reduce((a, b) => a + (b.precio * b.cant), 0);
-                                    const nVenta = { id: Date.now(), total, storeID, fecha: new Date().toLocaleString() };
-                                    const nProds = db.productos.map(p => {
-                                        const v = carrito.find(i => i.id === p.id);
-                                        return v ? {...p, stock: p.stock - v.cant} : p;
-                                    });
-                                    sync({ ...db, ventas: [...(db.ventas || []), nVenta], productos: nProds });
-                                    setCarrito([]);
-                                    alert("¡Venta Exitosa!");
-                                }} disabled={carrito.length === 0} className="w-full btn-premium py-6 rounded-[1.5rem] font-black uppercase text-xs tracking-[0.2em] shadow-2xl disabled:opacity-10 active:scale-95 transition-all">Finalizar Cobro</button>
+                                <button 
+                                    onClick={() => {
+                                        const total = carrito.reduce((a, b) => a + (b.precio * b.cant), 0);
+                                        const nVenta = { id: Date.now(), total, storeID, fecha: new Date().toLocaleString('es-MX') };
+                                        const nProds = db.productos.map(p => {
+                                            const v = carrito.find(i => i.id === p.id);
+                                            return v ? {...p, stock: p.stock - v.cant} : p;
+                                        });
+                                        sync({ ...db, ventas: [...(db.ventas || []), nVenta], productos: nProds });
+                                        setCarrito([]);
+                                        alert("Transacción Completada.");
+                                    }} 
+                                    disabled={carrito.length === 0} 
+                                    className="w-full btn-premium py-5 rounded-2xl font-black uppercase text-xs tracking-widest shadow-xl"
+                                >
+                                    Procesar Pago
+                                </button>
                             </div>
                         </aside>
                     </div>
