@@ -9,6 +9,7 @@
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/html5-qrcode"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.15.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.15.0/firebase-database-compat.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -16,10 +17,9 @@
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;900&display=swap');
         body { background: #020617; font-family: 'Inter', sans-serif; color: white; overflow: hidden; height: 100vh; }
         .glass { background: rgba(15, 23, 42, 0.7); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.08); }
-        .btn-premium { background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%); }
-        .low-stock { border: 1px solid rgba(239, 68, 68, 0.5) !important; animation: pulse-red 2s infinite; }
-        @keyframes pulse-red { 0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.3); } 70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); } 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); } }
-        #reader { width: 100%; border-radius: 24px; overflow: hidden; border: 2px solid #6366f1 !important; }
+        .btn-premium { background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%); transition: all 0.3s; }
+        .btn-premium:hover { transform: translateY(-2px); box-shadow: 0 10px 20px -10px rgba(99, 102, 241, 0.7); }
+        #reader { width: 100%; border-radius: 24px; overflow: hidden; border: 2px solid #6366f1 !important; margin-bottom: 20px; }
         .custom-scroll::-webkit-scrollbar { width: 4px; }
         .custom-scroll::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
     </style>
@@ -27,7 +27,7 @@
 <body>
     <div id="root"></div>
     <script type="text/babel">
-        const { useState, useEffect } = React;
+        const { useState, useEffect, useMemo } = React;
 
         const firebaseConfig = {
             apiKey: "AIzaSyB_y5tjnNrdMli8_5bd1tKZSSoaCwPRgIA",
@@ -40,11 +40,8 @@
 
         const App = () => {
             const [db, setDb] = useState({ usuarios: [], productos: [], ventas: [] });
-            // CORRECCIÓN 1: Cargar usuario desde localStorage al iniciar
-            const [user, setUser] = useState(() => {
-                const saved = localStorage.getItem('elite_pos_user');
-                return saved ? JSON.parse(saved) : null;
-            });
+            // SOLUCIÓN INICIO SESIÓN: Cargar desde localStorage
+            const [user, setUser] = useState(() => JSON.parse(localStorage.getItem('elite_session')) || null);
             const [view, setView] = useState('pos');
             const [carrito, setCarrito] = useState([]);
             const [mode, setMode] = useState('login');
@@ -57,70 +54,86 @@
                 return () => dbRef.off();
             }, []);
 
-            // CORRECCIÓN 2: Guardar usuario en localStorage cuando cambie
+            // Guardar sesión al cambiar usuario
             useEffect(() => {
-                if (user) localStorage.setItem('elite_pos_user', JSON.stringify(user));
-                else localStorage.removeItem('elite_pos_user');
+                if (user) localStorage.setItem('elite_session', JSON.stringify(user));
+                else localStorage.removeItem('elite_session');
             }, [user]);
 
             const sync = (nd) => database.ref('elite_pos_v2').set(nd);
             const storeID = user?.storeID;
-            const misProds = (db.productos || []).filter(p => p.storeID === storeID && p.nombre.toLowerCase().includes(search.toLowerCase()));
-            const misVentas = (db.ventas || []).filter(v => v.storeID === storeID);
 
-            useEffect(() => {
-                let html5QrCode;
-                if (scanning) {
-                    html5QrCode = new Html5Qrcode("reader");
-                    html5QrCode.start({ facingMode: "environment" }, { fps: 15, qrbox: 250 }, 
-                        (decodedText) => {
-                            const p = (db.productos || []).find(prod => prod.barcode === decodedText && prod.storeID === storeID);
-                            if (p && p.stock > 0) {
-                                addItem(p); setScanning(false); html5QrCode.stop();
-                            } else { alert("No encontrado o sin stock"); }
-                        }
-                    ).catch(err => console.error(err));
-                }
-                return () => { if (html5QrCode?.isScanning) html5QrCode.stop(); };
-            }, [scanning]);
+            const misProds = useMemo(() => (db.productos || []).filter(p => p.storeID === storeID && p.nombre.toLowerCase().includes(search.toLowerCase())), [db.productos, storeID, search]);
+            const misVentas = useMemo(() => (db.ventas || []).filter(v => v.storeID === storeID).reverse(), [db.ventas, storeID]);
+            const misUsuarios = useMemo(() => (db.usuarios || []).filter(u => u.storeID === storeID), [db.usuarios, storeID]);
 
             const addItem = (p) => {
                 const ex = carrito.find(i => i.id === p.id);
+                if (ex && ex.cant >= p.stock) return alert("Sin stock suficiente");
                 setCarrito(ex ? carrito.map(i => i.id === p.id ? {...i, cant: i.cant+1} : i) : [...carrito, {...p, cant: 1}]);
             };
 
-            const logout = () => { setUser(null); setView('pos'); };
+            const generarTicket = (venta, items) => {
+                const { jsPDF } = window.jspdf;
+                const doc = new jsPDF({ unit: 'mm', format: [80, 150] });
+                doc.setFontSize(10);
+                doc.text("ELITE POS - TICKET", 10, 10);
+                doc.text(`Fecha: ${venta.fecha}`, 10, 15);
+                doc.text("--------------------------------", 10, 20);
+                let y = 25;
+                items.forEach(i => {
+                    doc.text(`${i.nombre} x${i.cant}`, 10, y);
+                    doc.text(`$${(i.precio * i.cant).toFixed(2)}`, 60, y);
+                    y += 5;
+                });
+                doc.text("--------------------------------", 10, y);
+                doc.text(`TOTAL: $${venta.total.toFixed(2)}`, 10, y + 5);
+                doc.save(`Ticket_${venta.id}.pdf`);
+            };
+
+            const finalizarCobro = () => {
+                const total = carrito.reduce((a, b) => a + (b.precio * b.cant), 0);
+                const nVenta = { id: Date.now(), total, storeID, fecha: new Date().toLocaleString() };
+                const nProds = db.productos.map(p => {
+                    const v = carrito.find(i => i.id === p.id);
+                    return v ? {...p, stock: p.stock - v.cant} : p;
+                });
+                sync({ ...db, ventas: [...(db.ventas || []), nVenta], productos: nProds });
+                generarTicket(nVenta, carrito);
+                setCarrito([]);
+                alert("Venta registrada y Ticket generado.");
+            };
 
             if (!user) return (
                 <div className="h-screen flex items-center justify-center p-6 bg-[#020617]">
                     <div className="w-full max-w-sm glass p-10 rounded-[3rem] text-center shadow-2xl">
-                        <h1 className="text-4xl font-black italic mb-10 tracking-tighter">ELITE<span className="text-indigo-500">POS</span></h1>
+                        <h1 className="text-4xl font-black italic mb-10 tracking-tighter uppercase">Elite<span className="text-indigo-500">POS</span></h1>
                         {mode === 'login' ? (
                             <form onSubmit={(e) => {
                                 e.preventDefault();
                                 const u = e.target.u.value.trim().toLowerCase();
                                 const p = e.target.p.value.trim();
                                 const found = (db.usuarios || []).find(x => x.user.toLowerCase() === u && x.pin === p);
-                                if(found) setUser(found); else alert("Usuario o PIN incorrectos");
+                                if(found) setUser(found); else alert("Datos incorrectos");
                             }} className="space-y-4">
                                 <input name="u" className="w-full bg-white/5 border border-white/10 p-5 rounded-2xl text-white outline-none" placeholder="Usuario" required />
                                 <input name="p" type="password" className="w-full bg-white/5 border border-white/10 p-5 rounded-2xl text-center text-white outline-none" placeholder="PIN" required />
                                 <button className="w-full btn-premium py-5 rounded-2xl font-black uppercase text-xs">Entrar</button>
-                                <button type="button" onClick={() => setMode('reg')} className="text-indigo-400 text-[10px] block w-full mt-4 font-bold uppercase underline">Crear Nueva Cuenta</button>
+                                <button type="button" onClick={() => setMode('reg')} className="text-indigo-400 text-[10px] block w-full mt-4 font-bold uppercase underline">Registrar Empresa</button>
                             </form>
                         ) : (
                             <form onSubmit={(e) => {
                                 e.preventDefault();
                                 const nu = { user: e.target.u.value.trim().toLowerCase(), pin: e.target.p.value.trim(), name: e.target.n.value, storeID: 'ST-'+Date.now(), role: 'owner' };
                                 sync({...db, usuarios: [...(db.usuarios || []), nu]});
-                                alert("Cuenta creada exitosamente");
+                                alert("Cuenta creada. Ahora puedes entrar.");
                                 setMode('login');
                             }} className="space-y-4">
-                                <input name="n" className="w-full bg-white/5 border border-white/10 p-4 rounded-2xl text-white outline-none" placeholder="Nombre Negocio" required />
-                                <input name="u" className="w-full bg-white/5 border border-white/10 p-4 rounded-2xl text-white outline-none" placeholder="Usuario" required />
-                                <input name="p" className="w-full bg-white/5 border border-white/10 p-4 rounded-2xl text-center text-white" placeholder="PIN" required />
-                                <button className="w-full btn-premium py-5 rounded-2xl font-black uppercase text-xs">Registrar</button>
-                                <button type="button" onClick={() => setMode('login')} className="text-slate-500 text-[10px] block w-full mt-4 font-bold uppercase">Volver</button>
+                                <input name="n" className="w-full bg-white/5 border border-white/10 p-4 rounded-xl text-white outline-none" placeholder="Nombre Negocio" required />
+                                <input name="u" className="w-full bg-white/5 border border-white/10 p-4 rounded-xl text-white outline-none" placeholder="Usuario Dueño" required />
+                                <input name="p" className="w-full bg-white/5 border border-white/10 p-4 rounded-xl text-center text-white outline-none" placeholder="PIN" required />
+                                <button className="w-full btn-premium py-5 rounded-2xl font-black uppercase text-xs">Crear Cuenta</button>
+                                <button type="button" onClick={() => setMode('login')} className="text-slate-500 text-[10px] block w-full mt-4 font-bold uppercase underline">Volver al inicio</button>
                             </form>
                         )}
                     </div>
@@ -131,104 +144,133 @@
                 <div className="flex flex-col h-screen">
                     <header className="h-20 glass border-b border-white/5 px-8 flex justify-between items-center shrink-0">
                         <div className="flex flex-col">
-                            <span className="text-2xl font-black italic tracking-tighter">ELITE<span className="text-indigo-500">POS</span></span>
-                            <span className="text-[9px] font-bold text-slate-500 uppercase tracking-widest">{user.name} ({user.role})</span>
+                            <span className="text-2xl font-black italic tracking-tighter uppercase">Elite<span className="text-indigo-500">POS</span></span>
+                            <span className="text-[10px] text-indigo-400 font-bold uppercase tracking-widest">{user.name} | {user.role}</span>
                         </div>
                         <div className="flex items-center gap-6">
-                            <button onClick={() => setView('pos')} className={`text-[11px] font-black tracking-widest ${view==='pos'?'text-indigo-400':'text-slate-500'}`}>CAJA</button>
-                            {user.role === 'owner' && <button onClick={() => setView('admin')} className={`text-[11px] font-black tracking-widest ${view==='admin'?'text-indigo-400':'text-slate-500'}`}>ADMIN</button>}
-                            <button onClick={logout} className="text-red-500"><i className="fas fa-power-off text-lg"></i></button>
+                            <button onClick={() => setView('pos')} className={`text-[11px] font-black tracking-widest ${view==='pos'?'text-white':'text-slate-500'}`}>CAJA</button>
+                            {user.role === 'owner' && (
+                                <>
+                                    <button onClick={() => setView('admin')} className={`text-[11px] font-black tracking-widest ${view==='admin'?'text-white':'text-slate-500'}`}>INVENTARIO</button>
+                                    <button onClick={() => setView('team')} className={`text-[11px] font-black tracking-widest ${view==='team'?'text-white':'text-slate-500'}`}>EQUIPO</button>
+                                    <button onClick={() => setView('stats')} className={`text-[11px] font-black tracking-widest ${view==='stats'?'text-white':'text-slate-500'}`}>REPORTES</button>
+                                </>
+                            )}
+                            <button onClick={() => setUser(null)} className="text-red-500 hover:scale-110 transition-transform"><i className="fas fa-power-off text-lg"></i></button>
                         </div>
                     </header>
 
                     <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
                         <main className="flex-1 overflow-y-auto p-6 custom-scroll">
-                            {view === 'pos' ? (
+                            {view === 'pos' && (
                                 <>
-                                    <div className="flex gap-3 mb-8">
-                                        <input type="text" placeholder="Buscar producto..." className="flex-1 bg-white/5 border border-white/10 p-5 rounded-[1.5rem] text-xs outline-none focus:border-indigo-500" onChange={(e) => setSearch(e.target.value)} />
-                                        <button onClick={() => setScanning(!scanning)} className={`w-16 rounded-[1.5rem] flex items-center justify-center ${scanning ? 'bg-red-500' : 'bg-indigo-600'}`}>
-                                            <i className={`fas ${scanning ? 'fa-times' : 'fa-barcode'} text-lg`}></i>
-                                        </button>
-                                    </div>
-                                    {scanning && <div id="reader" className="mb-8"></div>}
-                                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-5">
+                                    <input type="text" placeholder="Buscar producto..." className="w-full bg-white/5 border border-white/10 p-5 rounded-2xl text-xs outline-none focus:border-indigo-500 mb-8" onChange={e => setSearch(e.target.value)} />
+                                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-6">
                                         {misProds.map(p => (
-                                            <div key={p.id} onClick={() => p.stock > 0 && addItem(p)} className={`glass p-6 rounded-[2rem] transition-all active:scale-95 ${p.stock <= 5 ? 'low-stock' : 'hover:border-indigo-500/50'}`}>
+                                            <div key={p.id} onClick={() => p.stock > 0 && addItem(p)} className="glass p-6 rounded-[2rem] cursor-pointer transition-all active:scale-95 hover:border-indigo-500">
                                                 <h3 className="text-[10px] font-black text-slate-500 uppercase mb-2 truncate">{p.nombre}</h3>
-                                                <p className="text-3xl font-black italic">${p.precio}</p>
-                                                <div className="mt-4 pt-4 border-t border-white/5 flex justify-between">
-                                                    <span className="text-[9px] font-bold text-slate-500 uppercase">Stock</span>
-                                                    <span className={`text-[10px] font-black ${p.stock <= 5 ? 'text-red-500' : 'text-indigo-400'}`}>{p.stock} pz</span>
+                                                <p className="text-3xl font-black italic">$ {p.precio}</p>
+                                                <div className="mt-4 pt-4 border-t border-white/5 flex justify-between text-[10px] font-bold">
+                                                    <span className="text-slate-500 uppercase">Stock</span>
+                                                    <span className="text-indigo-400">{p.stock} pz</span>
                                                 </div>
                                             </div>
                                         ))}
                                     </div>
                                 </>
-                            ) : (
+                            )}
+
+                            {view === 'admin' && (
                                 <div className="max-w-xl mx-auto glass p-10 rounded-[2.5rem]">
-                                    <h2 className="text-[11px] font-black mb-8 text-indigo-400 uppercase tracking-widest">Gestión de Inventario</h2>
+                                    <h2 className="text-xs font-black mb-8 text-indigo-400 uppercase tracking-widest">Gestión de Stock</h2>
                                     <form onSubmit={(e) => {
                                         e.preventDefault();
                                         const nombre = e.target.n.value.toUpperCase().trim();
                                         const nProds = [...(db.productos || [])];
                                         const idx = nProds.findIndex(p => p.nombre === nombre && p.storeID === storeID);
                                         
-                                        // CORRECCIÓN 3: Si el producto existe, sumar stock
                                         if(idx !== -1) {
                                             nProds[idx] = { ...nProds[idx], precio: parseFloat(e.target.pr.value), stock: nProds[idx].stock + parseInt(e.target.s.value) };
                                         } else {
-                                            nProds.push({ id: Date.now(), barcode: e.target.b.value, nombre, precio: parseFloat(e.target.pr.value), stock: parseInt(e.target.s.value), storeID });
+                                            nProds.push({ id: Date.now(), nombre, precio: parseFloat(e.target.pr.value), stock: parseInt(e.target.s.value), storeID });
                                         }
-                                        
                                         sync({...db, productos: nProds});
                                         e.target.reset();
-                                        alert("Inventario Sincronizado");
+                                        alert("Inventario sincronizado.");
                                     }} className="space-y-4">
-                                        <input name="n" className="w-full bg-black/40 border border-white/10 p-4 rounded-2xl text-xs" placeholder="Nombre del Producto" required />
-                                        <div className="grid grid-cols-2 gap-4">
-                                            <input name="pr" type="number" step="0.01" className="w-full bg-black/40 border border-white/10 p-4 rounded-2xl text-xs" placeholder="Precio $" required />
-                                            <input name="s" type="number" className="w-full bg-black/40 border border-white/10 p-4 rounded-2xl text-xs" placeholder="Stock" required />
-                                        </div>
-                                        <input name="b" className="w-full bg-black/40 border border-white/10 p-4 rounded-2xl text-xs" placeholder="Código de Barras (opcional)" />
-                                        <button className="w-full btn-premium py-5 rounded-2xl font-black text-[11px] uppercase tracking-widest">Actualizar Inventario</button>
+                                        <input name="n" className="w-full bg-black/40 border border-white/10 p-4 rounded-xl text-xs" placeholder="Nombre del Producto" required />
+                                        <input name="pr" type="number" step="0.01" className="w-full bg-black/40 border border-white/10 p-4 rounded-xl text-xs" placeholder="Precio de Venta" required />
+                                        <input name="s" type="number" className="w-full bg-black/40 border border-white/10 p-4 rounded-xl text-xs" placeholder="Cantidad a sumar al stock" required />
+                                        <button className="w-full btn-premium py-5 rounded-xl font-black text-[11px] uppercase tracking-widest">Actualizar en Cloud</button>
                                     </form>
+                                </div>
+                            )}
+
+                            {view === 'team' && (
+                                <div className="max-w-xl mx-auto space-y-8">
+                                    <div className="glass p-10 rounded-[2.5rem]">
+                                        <h2 className="text-xs font-black mb-8 text-indigo-400 uppercase tracking-widest">Nuevo Empleado</h2>
+                                        <form onSubmit={(e) => {
+                                            e.preventDefault();
+                                            const nu = { user: e.target.u.value.toLowerCase(), pin: e.target.p.value, name: user.name, storeID, role: 'empleado' };
+                                            sync({...db, usuarios: [...(db.usuarios || []), nu]});
+                                            e.target.reset();
+                                            alert("Empleado añadido.");
+                                        }} className="space-y-4">
+                                            <input name="u" className="w-full bg-black/40 border border-white/10 p-4 rounded-xl text-xs" placeholder="Usuario del Empleado" required />
+                                            <input name="p" className="w-full bg-black/40 border border-white/10 p-4 rounded-xl text-xs text-center" placeholder="PIN" required />
+                                            <button className="w-full btn-premium py-5 rounded-xl font-black text-[11px] uppercase">Añadir al Equipo</button>
+                                        </form>
+                                    </div>
+                                    <div className="glass p-8 rounded-[2.5rem]">
+                                        {misUsuarios.map((u, i) => (
+                                            <div key={i} className="flex justify-between items-center p-4 border-b border-white/5 uppercase text-[11px] font-bold">
+                                                <span>{u.user}</span>
+                                                <span className="text-indigo-400">{u.role}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {view === 'stats' && (
+                                <div className="max-w-4xl mx-auto space-y-6">
+                                    <div className="glass p-8 rounded-[2rem]">
+                                        <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Ventas Acumuladas</p>
+                                        <p className="text-5xl font-black italic text-emerald-400 mt-2">$ {misVentas.reduce((a,b)=>a+b.total, 0).toFixed(2)}</p>
+                                    </div>
+                                    <div className="glass p-8 rounded-[2rem] max-h-96 overflow-y-auto">
+                                        <h3 className="text-xs font-black text-slate-500 uppercase mb-4">Últimos Movimientos</h3>
+                                        {misVentas.map(v => (
+                                            <div key={v.id} className="flex justify-between py-3 border-b border-white/5 text-[11px]">
+                                                <span>{v.fecha}</span>
+                                                <span className="font-black text-indigo-400">$ {v.total.toFixed(2)}</span>
+                                            </div>
+                                        ))}
+                                    </div>
                                 </div>
                             )}
                         </main>
 
                         <aside className="w-full md:w-[380px] glass border-l border-white/10 flex flex-col shrink-0">
                             <div className="p-8 border-b border-white/5 flex justify-between items-center">
-                                <h2 className="font-black text-[11px] text-slate-500 uppercase tracking-widest">Carrito</h2>
+                                <h2 className="font-black text-[11px] text-slate-500 uppercase tracking-widest">Caja</h2>
                                 <button onClick={() => setCarrito([])} className="text-red-500 text-[10px] font-black uppercase underline">Vaciar</button>
                             </div>
-                            <div className="flex-1 overflow-y-auto p-6 space-y-3 custom-scroll">
-                                {carrito.map((item, idx) => (
-                                    <div key={idx} className="bg-white/5 p-5 rounded-[1.5rem] flex justify-between items-center">
-                                        <div className="flex flex-col">
-                                            <span className="font-black text-white text-[10px] uppercase">{item.nombre}</span>
-                                            <span className="text-[10px] text-slate-500">x{item.cant}</span>
-                                        </div>
-                                        <span className="font-black text-indigo-400">${(item.precio * item.cant).toFixed(2)}</span>
+                            <div className="flex-1 overflow-y-auto p-6 space-y-4 custom-scroll">
+                                {carrito.map((i, idx) => (
+                                    <div key={idx} className="bg-white/5 p-4 rounded-xl flex justify-between items-center">
+                                        <span className="text-[11px] font-bold uppercase">{i.nombre} x{i.cant}</span>
+                                        <span className="font-black">${(i.precio * i.cant).toFixed(2)}</span>
                                     </div>
                                 ))}
                             </div>
-                            <div className="p-10 bg-slate-900/80 border-t border-white/10">
+                            <div className="p-10 border-t border-white/10">
                                 <div className="flex justify-between items-end mb-8">
-                                    <span className="text-slate-500 font-black text-[11px] uppercase tracking-widest leading-none">Total</span>
-                                    <span className="text-5xl font-black text-white italic tracking-tighter leading-none">${carrito.reduce((a, b) => a + (b.precio * b.cant), 0).toFixed(2)}</span>
+                                    <span className="text-slate-500 font-black text-[11px] uppercase tracking-widest">Total</span>
+                                    <span className="text-5xl font-black italic leading-none">$ {carrito.reduce((a, b) => a + (b.precio * b.cant), 0).toFixed(2)}</span>
                                 </div>
-                                <button onClick={() => {
-                                    const total = carrito.reduce((a, b) => a + (b.precio * b.cant), 0);
-                                    const nVenta = { id: Date.now(), total, storeID, fecha: new Date().toLocaleString() };
-                                    const nProds = db.productos.map(p => {
-                                        const v = carrito.find(i => i.id === p.id);
-                                        return v ? {...p, stock: p.stock - v.cant} : p;
-                                    });
-                                    sync({ ...db, ventas: [...(db.ventas || []), nVenta], productos: nProds });
-                                    setCarrito([]);
-                                    alert("Venta Exitosa");
-                                }} disabled={carrito.length === 0} className="w-full btn-premium py-6 rounded-[1.5rem] font-black uppercase text-xs tracking-widest disabled:opacity-10 active:scale-95 transition-all">Cobrar</button>
+                                <button onClick={finalizarCobro} disabled={carrito.length === 0} className="w-full btn-premium py-6 rounded-2xl font-black uppercase text-xs tracking-widest disabled:opacity-20 active:scale-95 transition-all">Pagar y Generar Ticket</button>
                             </div>
                         </aside>
                     </div>
